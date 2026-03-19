@@ -1,0 +1,63 @@
+services:
+  # PostgreSQL データベース (4-4~4-5 要件)
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: household_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Express.js API サーバー (4-2〜4-5 要件)
+  api:
+    build: ./api-server
+    ports:
+      - '3001:3001'
+      - '9230:9229'  # Node.js Inspector (4-3-2 要件: デバッグポート)
+    volumes:
+      - ./api-server:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - LOG_LEVEL=debug  # 'error' | 'warn' | 'info' | 'http' | 'debug' (4-3-1 要件)
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/household_db
+      - CORS_ORIGIN=http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # 起動時にマイグレーション → シード → サーバー起動
+    command: >
+      sh -c "npx prisma db push --accept-data-loss &&
+             npx ts-node prisma/seed.ts &&
+             node --inspect=0.0.0.0:9229 node_modules/.bin/ts-node-dev --respawn --transpile-only src/index.ts"
+
+  # Next.js フロントエンド (session3 から修正)
+  next:
+    build: ./household-next
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./household-next:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NODE_ENV=development
+      - WATCHPACK_POLLING=true
+      # ブラウザから API を呼ぶためのホスト公開 URL (NEXT_PUBLIC_ プレフィックス必須)
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+    depends_on:
+      - api
+    # ホストの node_modules (Windows) を上書きして Linux 向けに再インストール
+    command: sh -c "npm install --silent && node_modules/.bin/next dev -H 0.0.0.0"
+
+volumes:
+  postgres_data:
